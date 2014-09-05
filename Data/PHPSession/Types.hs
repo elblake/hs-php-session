@@ -7,8 +7,7 @@
 -- Stability: experimental
 -- Portability: portable
 --
--- Encodes and decodes serialized PHP sessions in the format used by the \"php\" setting
--- for serialize_handler.
+-- Types used for representing PHP data types from encoding and decoding a PHP session.
 -- 
 
 module Data.PHPSession.Types (
@@ -21,9 +20,10 @@ module Data.PHPSession.Types (
 
 import qualified Data.ByteString.Lazy.Char8 as LBS
 
--- | Holds the "top-level" session variables and their value contents.
+-- | Holds the \"top-level\" session variables and their value contents.
 type PHPSessionVariableList = [(LBS.ByteString, PHPSessionValue)]
 
+-- | Represents the name of a PHP class.
 data PHPSessionClassName =
   PHPSessionClassName LBS.ByteString
 
@@ -33,6 +33,34 @@ instance Show PHPSessionClassName where
 instance Eq PHPSessionClassName where
   PHPSessionClassName a == PHPSessionClassName b = a == b
 
+-- | 'PHPSessionValue' Represents a PHP value, which may be a number, string,
+-- array, object, boolean, null, or references.
+--
+-- * 'PHPSessionValueArray' represents an array as a list of key-value pairs
+--   of values of type 'PHPSessionValue'.
+--
+-- * 'PHPSessionValueObject' is similar to 'PHPSessionValueArray' but also 
+--   includes a class name of type 'PHPSessionClassName'.
+--
+-- * 'PHPSessionValueObjectSerializeable' represent objects of which their classes
+--   implement Serializeable to handle their own serialization and don't use
+--   the normal serialization format for its contained objects.
+--
+-- * 'PHPSessionValueBool', 'PHPSessionValueInt', 'PHPSessionValueFloat',
+--   'PHPSessionValueNull', and 'PHPSessionValueString' represent basic types
+--   boolean, integer, floats, null and string respectively.
+-- 
+-- * 'PHPSessionValueFloat' stores the number representation as an 'Either' 'Int' 'Double'
+--   to preserve instances where the number representation is actually an integer.
+--   It should be noted that the re-encoded value is usually rounded unlike PHP's
+--   representation.
+--
+-- * 'PHPSessionValueMisc' stores a few other types such as references and
+--   values which follow the general serialization format but aren't recognized
+--   by the decoder. A list of 'PHPSessionAttr' provides the information for
+--   reconstructing the serialized representation when re-encoding this type
+--   of value.
+--
 data PHPSessionValue =
   PHPSessionValueArray [(PHPSessionValue,PHPSessionValue)] |
   PHPSessionValueBool Bool |
@@ -80,6 +108,9 @@ instance Ord PHPSessionValue where
   PHPSessionValueMisc a b <= PHPSessionValueMisc c d = False
   _ <= _ = False
   
+-- | 'PHPSessionAttr' are values associated with 'PHPSessionValueMisc' to inspect and
+-- generally re-encode the necessary information for that value.
+-- 
 data PHPSessionAttr =
   PHPSessionAttrInt Int |
   PHPSessionAttrFloat Double |

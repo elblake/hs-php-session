@@ -19,7 +19,6 @@ module Data.PHPSession (
     encodePHPSession,
     encodePHPSessionValue,
     -- * Decode only part of a 'ByteString'
-    decodePartialPHPSession,
     decodePartialPHPSessionValue,
     -- * PHP session types
     PHPSessionVariableList,
@@ -33,139 +32,116 @@ import Data.PHPSession.Types
 import qualified Data.ByteString.Char8 as BS
 import qualified Data.ByteString.Lazy.Char8 as LBS
 import qualified Data.List as L
-import Data.List (foldl')
 import qualified Data.Char as C
+import Data.List (foldl')
 
 -- import qualified Text.Regex.Posix as TR
 
--- | Decodes a 'ByteString' representing a PHP session into a 'PHPSessionVariableList'
+-- | Decodes a 'ByteString' containing a serialization of a list of session variables
+-- using the \"php\" session serialization format into a 'PHPSessionVariableList'
 decodePHPSession :: LBS.ByteString -> Maybe PHPSessionVariableList
 decodePHPSession input =
-  case decodePartialPHPSession input of
-    (everything,"") -> everything
-    (_, _) -> Nothing
+  case decodePHPSessionEachTopLevel input [] of
+    Nothing -> Nothing
+    Just (everything,"") -> Just everything
+    Just (_, _) -> Nothing
 
---  -> [(LBS.ByteString, PHPSessionValue)]
--- | Decodes as much as needed of a 'ByteString' representing a PHP session into a 'PHPSessionVariableList'
-decodePartialPHPSession :: LBS.ByteString -> (Maybe PHPSessionVariableList, LBS.ByteString)
-decodePartialPHPSession "" = (Nothing, "")
-decodePartialPHPSession input =
-  decodePartialPHPSessionEachTopLevel input []
   where
-    decodePartialPHPSessionEachTopLevel input lst =
+    decodePHPSessionEachTopLevel input lst =
       case input of
-        "" -> (Just $ reverse lst,"")
-        _ ->
-          case LBS.take 1 input of
-            "}" ->
-              (Just $ reverse lst, LBS.drop 1 input)
-            _ ->
-              case decodePartialPHPSessionVarName input of
-                (Nothing,_) -> (Nothing, input)
-                (Just name, rest) ->
-                  case decodePartialPHPSessionValue rest of
-                    (Nothing,_) -> (Nothing, input)
-                    (Just sym,rest') ->
-                      decodePartialPHPSessionEachTopLevel rest' ((name, sym):lst)
-    decodePartialPHPSessionVarName input =
-      case dec input of
-        Nothing -> (Nothing, input)
-        Just (sername, rest) -> (Just sername, rest)
-         --case input TR.=~ ("[a-zA-Z_][a-zA-Z0-9_]*\\|" :: LBS.ByteString) :: (LBS.ByteString,LBS.ByteString,LBS.ByteString) of
-        --  ("",sernametype,rest) ->
-        --    let (sername,_) = LBS.span (/='|') sernametype
-        --     in (sername,rest)
---  where
-    dec input = do
-      (f0,n0) <- get_alpha input
-      (restname,n1) <- get_alphanum_any_left n0
+        "" -> Just (reverse lst,"")
+        _ -> do
+          (name, rest) <- decodePHPSessionTopLevelVarName input
+          (sym,  rest') <- decodePartialPHPSessionValue rest
+          decodePHPSessionEachTopLevel rest' ((name, sym):lst)
+    
+    decodePHPSessionTopLevelVarName input = do
+      (varname,n1) <- get_name_until_vertbar input
       (_,n2) <- get_vertbar n1
-      return (LBS.concat [f0,restname], n2)
-    get_alpha input =
-      case LBS.takeWhile (\a -> (C.isAsciiLower a) || (C.isAsciiUpper a) || (a == '_')) input of
-        "" -> Nothing; l -> Just (l, LBS.drop (LBS.length l) input)
-    get_alphanum_any_left input =
-      case LBS.takeWhile (\a -> (C.isAsciiLower a) || (C.isAsciiUpper a) || (C.isDigit a) || (a == '_')) input of
+      return (varname, n2)
+    get_name_until_vertbar input =
+      case LBS.takeWhile (/= '|') input of
         l -> Just (l, LBS.drop (LBS.length l) input)
     get_vertbar input = case LBS.take 1 input of "|" -> Just ("|", LBS.drop 1 input); _ -> Nothing
 
-
   
 -- Not exported and used by decodePartialPHPSessionValue
-decodePartialPHPSessionValuesNested :: LBS.ByteString -> [PHPSessionValue] -> (Maybe [PHPSessionValue], LBS.ByteString)
+decodePartialPHPSessionValuesNested :: LBS.ByteString -> [PHPSessionValue] -> Maybe ([PHPSessionValue], LBS.ByteString)
 decodePartialPHPSessionValuesNested input lst =
   case input of
-    "" -> (Just $ reverse lst,"")
+    "" -> Just (reverse lst,"")
     _ ->
       case LBS.take 1 input of
         "}" ->
-          (Just $ reverse lst, LBS.drop 1 input)
-        _ ->
-          case decodePartialPHPSessionValue input of
-            (Just sym,rest) -> 
-              decodePartialPHPSessionValuesNested rest (sym:lst)
-            _ -> (Nothing, input)
+          Just (reverse lst, LBS.drop 1 input)
+        _ -> do
+          (sym,rest) <- decodePartialPHPSessionValue input
+          decodePartialPHPSessionValuesNested rest (sym:lst)
 
 
--- | Decodes a 'ByteString' into a 'PHPSessionValue'
+-- | Decodes a 'ByteString' containing a session serialization of a value into a 
+-- 'PHPSessionValue'. The format being decoded is similar if not probably the same 
+-- format used by PHP's serialize/unserialize functions.
+-- 'Nothing' is returned if the input bytestring could not be parsed correctly.
+--
 decodePHPSessionValue :: LBS.ByteString -> Maybe PHPSessionValue
 decodePHPSessionValue input =
   case decodePartialPHPSessionValue input of
-    (everything,"") -> everything
-    (_,_) -> Nothing
+    Nothing -> Nothing
+    Just (everything,"") -> Just everything
+    Just (_, _) -> Nothing
 
--- | Decodes as much of a 'ByteString' as needed into a 'PHPSessionValue'
-decodePartialPHPSessionValue :: LBS.ByteString -> (Maybe PHPSessionValue, LBS.ByteString)
-decodePartialPHPSessionValue "" = (Nothing, "")
+-- | Decodes as much of a 'ByteString' as needed into a 'PHPSessionValue' and returns
+-- the rest of the string. Decoding ends at either the end of the string or when the
+-- extent of the current nested structure is met when an extra closing curly brace is
+-- encountered. The format being decoded is similar if not probably the same 
+-- format used by PHP's serialize/unserialize functions.
+-- 'Nothing' is returned if the input bytestring could not be parsed correctly.
+--
+decodePartialPHPSessionValue :: LBS.ByteString -> Maybe (PHPSessionValue, LBS.ByteString)
+decodePartialPHPSessionValue "" = Nothing
 decodePartialPHPSessionValue input =
   let sertype = LBS.take 1 input
       rest = LBS.drop 1 input
    in case sertype of
         -- "Object implementing Serializeable" (C)
         -- ex: hi|C:9:"ClassName":5:{harr}}
-        "C" ->
-          case dec_colon_integer_colon_dquote_classname_dquote_colon rest of
-            Nothing -> (Nothing, input)
-            Just (_classnamelen,cls',numrest) ->
-          
+        "C" -> do
+          (_classnamelen,cls',numrest) <-
+                dec_colon_integer_colon_dquote_classname_dquote_colon rest
           --case rest TR.=~ (":[0-9]+:\"[A-Za-z0-9_]+\":" :: LBS.ByteString) :: (LBS.ByteString,LBS.ByteString,LBS.ByteString) of
           --  ("",cls,numrest) ->
-              case LBS.span (/=':') numrest of
+          case LBS.span (/=':') numrest of
                 (num, colrest) ->
                   -- let [_,cls',_] = LBS.split '"' cls
                   let num' = read (LBS.unpack num)
                       (dat,rest') = LBS.splitAt num' $ LBS.drop 2 colrest
                       rest'' = LBS.drop 1 rest' 
-                   in (Just $ PHPSessionValueObjectSerializeable (PHPSessionClassName cls') dat, rest'')
+                   in Just (PHPSessionValueObjectSerializeable (PHPSessionClassName cls') dat, rest'')
                 
         -- Object (O) ex: hi|O:9:"ClassName":2:{s:4:"blah";i:1;s:3:"str";s:6:"string";}
-        "O" ->
-          case dec_colon_integer_colon_dquote_classname_dquote rest of
-            Nothing -> (Nothing, input)
-            Just (_,cls',attrest) ->
+        "O" -> do
+          (_,cls',attrest) <- 
+                dec_colon_integer_colon_dquote_classname_dquote rest
           -- case rest TR.=~ (":[0-9]+:\"[A-Za-z0-9_]+\"" :: LBS.ByteString) :: (LBS.ByteString,LBS.ByteString,LBS.ByteString) of
-          --  ("",cls,attrest) ->
-          --  let [_,cls',_] = LBS.split '"' cls
-              let (l,rest') = decodePartialPHPSessionAttr attrest []
+          let (l,rest') = decodePartialPHPSessionAttr attrest []
                in case l of
-                    Nothing -> (Nothing, input)
+                    Nothing -> Nothing -- , input)
                     Just [PHPSessionAttrInt _, PHPSessionAttrNested vals] ->
                       let (al, bl) = L.partition (odd . snd) (zip vals [1..])
                           arlst = map (\[a,b] -> (a,b)) $ L.transpose [ map (\(a,_)->a) al,  map (\(a,_)->a) bl ]
-                       in ((Just $ PHPSessionValueObject (PHPSessionClassName cls') arlst),rest')
+                       in Just ((PHPSessionValueObject (PHPSessionClassName cls') arlst),rest')
                    
         -- String (s) ex: hi|s:6:"string";
-        "s" ->
-          case dec_colon_integer_colon_dquote rest of
-            Nothing -> (Nothing, input)
-            Just (len, strrest) ->
+        "s" -> do
+          (len, strrest) <- dec_colon_integer_colon_dquote rest
           --case rest TR.=~ (":[0-9]+:\"" :: LBS.ByteString) :: (LBS.ByteString,LBS.ByteString,LBS.ByteString) of
           --  ("",strlen,strrest) ->
           --    let [_,len,_] = LBS.split ':' strlen
-              let len' = read (LBS.unpack len)
-                  (str,rest') = LBS.splitAt len' $ strrest
-                  rest'' = LBS.drop 2 rest' 
-               in (Just $ PHPSessionValueString str,rest'')
+          let len' = read (LBS.unpack len)
+              (str,rest') = LBS.splitAt len' $ strrest
+              rest'' = LBS.drop 2 rest' 
+           in Just (PHPSessionValueString str,rest'')
                
         _ ->
           let (l,rest') = decodePartialPHPSessionAttr rest []
@@ -174,26 +150,26 @@ decodePartialPHPSessionValue input =
                 ("a",Just [PHPSessionAttrInt _, PHPSessionAttrNested vals]) -> 
                   let (al, bl) = L.partition (odd . snd) (zip vals [1..])
                       arlst = map (\[a,b] -> (a,b)) $ L.transpose [ map (\(a,_)->a) al,  map (\(a,_)->a) bl ]
-                   in (Just $ PHPSessionValueArray arlst, rest')
+                   in Just (PHPSessionValueArray arlst, rest')
                 
                 -- Boolean (b) ex: hi|b:0; = FALSE -- hi|b:1; = TRUE
-                ("b",Just [PHPSessionAttrInt 1]) -> (Just $ PHPSessionValueBool True,rest')
-                ("b",Just [PHPSessionAttrInt 0]) -> (Just $ PHPSessionValueBool False,rest')
+                ("b",Just [PHPSessionAttrInt 1]) -> Just (PHPSessionValueBool True,rest')
+                ("b",Just [PHPSessionAttrInt 0]) -> Just (PHPSessionValueBool False,rest')
                 
                 -- Float (d) ex: hi|d:0.1000000000000000055511151231257827021181583404541015625;
-                ("d",Just [PHPSessionAttrFloat num]) -> (Just (PHPSessionValueFloat $ Right num),rest')
-                ("d",Just [PHPSessionAttrInt num]) -> (Just (PHPSessionValueFloat $ Left num),rest')
+                ("d",Just [PHPSessionAttrFloat num]) -> Just ((PHPSessionValueFloat $ Right num),rest')
+                ("d",Just [PHPSessionAttrInt num]) -> Just ((PHPSessionValueFloat $ Left num),rest')
                 
                 -- Integer (i) ex: hi|i:26;
-                ("i",Just [PHPSessionAttrInt num]) -> (Just $ PHPSessionValueInt num,rest')
+                ("i",Just [PHPSessionAttrInt num]) -> Just (PHPSessionValueInt num,rest')
                 
                 -- Null (N) ex: hi|N;
-                ("N",Just []) -> (Just PHPSessionValueNull,rest')
+                ("N",Just []) -> Just (PHPSessionValueNull,rest')
                 
                 -- Recursive values and references (r), (R), TODO: PHP 6 encoded String (S)
                 _ -> case l of
-                       Just l' -> (Just (PHPSessionValueMisc sertype l'),rest')
-                       Nothing -> (Nothing, input)
+                       Just l' -> Just ((PHPSessionValueMisc sertype l'),rest')
+                       Nothing -> Nothing -- , input)
   where
 
     decodePartialPHPSessionAttr :: LBS.ByteString -> [PHPSessionAttr] -> (Maybe [PHPSessionAttr],LBS.ByteString)
@@ -212,12 +188,12 @@ decodePartialPHPSessionValue input =
                       decodePartialPHPSessionAttr rest ((PHPSessionAttrFloat $ read $ num'):l)
                     False ->
                       decodePartialPHPSessionAttr rest ((PHPSessionAttrInt $ read $ num'):l)
-            _ ->
+            Nothing ->
               case dec_colon_and_open_curly input of
                 Just (":{", rest) ->
                 --  case input TR.=~ (":{" :: LBS.ByteString) :: (LBS.ByteString,LBS.ByteString,LBS.ByteString) of
                 --    ("",":{",rest) ->
-                      let (Just sub,rest') = decodePartialPHPSessionValuesNested rest []
+                      let Just (sub,rest') = decodePartialPHPSessionValuesNested rest []
                        in (Just $ reverse (PHPSessionAttrNested sub:l),rest')
                 Nothing ->
                   (Nothing, input)
@@ -251,7 +227,7 @@ decodePartialPHPSessionValue input =
       return (num,n1)
     dec_colon_and_open_curly input = do
       (_0,n0) <- dec_get_colon input
-      (_1,n1) <- dec_get_openc input
+      (_1,n1) <- dec_get_openc n0
       return (":{", n1)
     
     dec_one_or_more input a = case a of "" -> Nothing; l -> Just (l, LBS.drop (LBS.length l) input)
@@ -265,7 +241,8 @@ decodePartialPHPSessionValue input =
     dec_get_dquote input = case LBS.take 1 input of "\"" -> Just ("\"", LBS.drop 1 input); _ -> Nothing
     dec_get_colon  input = case LBS.take 1 input of ":" -> Just (":", LBS.drop 1 input); _ -> Nothing
 
--- | Encode a 'PHPSessionVariableList' into a 'ByteString'.
+-- | Encode a 'PHPSessionVariableList' into a 'ByteString' containing the serialization
+-- of a list of session variables using the \"php\" session serialization format.
 encodePHPSession :: PHPSessionVariableList -> LBS.ByteString
 encodePHPSession lst =
   encodePHPSessionTop lst []
@@ -280,7 +257,10 @@ encodePHPSessionTop lst outlst =
     encodePHPSessionVarName name =
       LBS.concat [name, "|"]
 
--- | Encode a 'PHPSessionValue' into a 'ByteString'.
+-- | Encode a 'PHPSessionValue' into a 'ByteString' containing the serialization of a
+-- PHP value. The format being encoded into is similar if not probably the same 
+-- format used by PHP's serialize/unserialize functions.
+--
 encodePHPSessionValue var =
   case var of
     PHPSessionValueObjectSerializeable (PHPSessionClassName cls) dat ->
