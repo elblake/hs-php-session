@@ -26,5 +26,5 @@ library
     Data.PHPSession.Types
   -- other-modules:       
   build-depends:       
-                       base ==4.6.*,
-                       bytestring
+                       base == 4.*,
+                       bytestring >= 0.10.0.0
