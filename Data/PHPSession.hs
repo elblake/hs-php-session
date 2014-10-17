@@ -196,7 +196,13 @@ decodePartialPHPSessionValue input =
                       let Just (sub,rest') = decodePartialPHPSessionValuesNested rest []
                        in (Just $ reverse (PHPSessionAttrNested sub:l),rest')
                 Nothing ->
-                  (Nothing, input)
+                  case dec_colon_uppercase_letters input of
+                    Just ("NAN", rest)  -> decodePartialPHPSessionAttr rest ((PHPSessionAttrFloat $  0/0):l)
+                    Just ("INF", rest)  -> decodePartialPHPSessionAttr rest ((PHPSessionAttrFloat $  1/0):l)
+                    Just ("-INF", rest) -> decodePartialPHPSessionAttr rest ((PHPSessionAttrFloat $ -1/0):l)
+                    Nothing ->
+                      error $ show input
+                     -- (Nothing, input)
                   --    error "No good"
     dec_colon_integer_colon_dquote_classname_dquote_colon input = do
       (_0,n0) <- dec_get_colon input
@@ -229,17 +235,48 @@ decodePartialPHPSessionValue input =
       (_0,n0) <- dec_get_colon input
       (_1,n1) <- dec_get_openc n0
       return (":{", n1)
+    dec_colon_uppercase_letters input = do
+      (_0,n0) <- dec_get_colon input
+      (a1,n1) <- dec_get_uppercase_letters n0
+      return (a1,n1)
     
     dec_one_or_more input a = case a of "" -> Nothing; l -> Just (l, LBS.drop (LBS.length l) input)
     dec_get_number input =
-      dec_one_or_more input $ LBS.takeWhile (\a -> (C.isDigit a) || (a == '-') || (a == '.')) input
+      case dec_get_neg_number input of
+        Just result -> Just result
+        Nothing ->
+          dec_get_pos_number input
+    dec_get_neg_number input = do
+      (a0,n0) <- dec_get_dash input
+      (a1,n1) <- dec_get_pos_number n0
+      return (LBS.concat [a0,a1], n1)
+    dec_get_pos_number input = do
+      (a0,n0) <- dec_get_integer input
+      case dec_get_dot n0 of
+        Nothing -> return (a0,n0)
+        Just (a1,n1) -> do
+          (a2,n2) <- dec_get_integer n1
+          return (LBS.concat [a0,a1,a2], n2)
     dec_get_alphanum input =
       dec_one_or_more input $ LBS.takeWhile (\a -> (C.isDigit a) || (C.isAsciiLower a) || (C.isAsciiUpper a) || (a == '_')) input
     dec_get_integer input =
       dec_one_or_more input $ LBS.takeWhile C.isDigit input
+    dec_get_uppercase_letters input =
+      case dec_get_neg_uppercase_letters input of
+        Just result -> Just result
+        Nothing ->
+          dec_get_pos_uppercase_letters input
+    dec_get_neg_uppercase_letters input = do
+      (a0,n0) <- dec_get_dash input
+      (a1,n1) <- dec_one_or_more n0 $ LBS.takeWhile C.isAsciiUpper n0
+      return (LBS.concat [a0,a1], n1)
+    dec_get_pos_uppercase_letters input =
+      dec_one_or_more input $ LBS.takeWhile C.isAsciiUpper input
     dec_get_openc  input = case LBS.take 1 input of "{" -> Just ("{", LBS.drop 1 input); _ -> Nothing
     dec_get_dquote input = case LBS.take 1 input of "\"" -> Just ("\"", LBS.drop 1 input); _ -> Nothing
     dec_get_colon  input = case LBS.take 1 input of ":" -> Just (":", LBS.drop 1 input); _ -> Nothing
+    dec_get_dash   input = case LBS.take 1 input of "-" -> Just ("-", LBS.drop 1 input); _ -> Nothing
+    dec_get_dot    input = case LBS.take 1 input of "." -> Just (".", LBS.drop 1 input); _ -> Nothing
 
 -- | Encode a 'PHPSessionVariableList' into a 'ByteString' containing the serialization
 -- of a list of session variables using the \"php\" session serialization format.
@@ -321,6 +358,11 @@ encodePHPSessionValue var =
     encodePHPSessionAttr att =
       case att of
         PHPSessionAttrInt i -> LBS.concat [":", LBS.pack $ show i]
+        PHPSessionAttrFloat f | isNaN f -> ":NAN"
+        PHPSessionAttrFloat f | isInfinite f ->
+          if f < 0
+            then ":-INF"
+            else ":INF"
         PHPSessionAttrFloat f -> LBS.concat [":", LBS.pack $ show f]
         PHPSessionAttrNested vars ->
           LBS.concat $ [":{"] ++ map encodePHPSessionValue vars ++ ["}"]
