@@ -1,5 +1,5 @@
 name:                hs-php-session
-version:             0.0.9.0
+version:             0.0.9.1
 synopsis:            PHP session and values serialization
 description:         
     A library for encoding and decoding serialized PHP sessions in the format
