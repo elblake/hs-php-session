@@ -15,7 +15,8 @@ module Data.PHPSession.Types (
     PHPSessionVariableList,
     PHPSessionClassName (..),
     PHPSessionValue (..),
-    PHPSessionAttr (..)
+    PHPSessionAttr (..),
+    PHPSessionDecodingError (..)
 ) where
 
 import qualified Data.ByteString.Lazy.Char8 as LBS
@@ -127,3 +128,60 @@ instance Eq PHPSessionAttr where
   PHPSessionAttrNested a == PHPSessionAttrNested b = a == b
   _ == _ = False
 
+
+-- | 'PHPSessionDecodingError' are error types that can be returned if decoding
+-- did not succeed. They are returned by the 'Either' versions of the decoding
+-- functions.
+--
+-- * 'PHPSessionStringEmpty' is given if the decoder got an empty byte sequence.
+--
+-- * 'PHPSessionCouldntDecodeSerializablePast' is given if the decoding does not
+--   succeed while in the particular byte sequence for a class that implements
+--   Serializable.
+--
+-- * 'PHPSessionCouldntDecodeObjectPast' is given if the decoding does not succeed
+--   while in the particular byte sequence for a PHP object value.
+--
+-- * 'PHPSessionCouldntDecodeStringPast' is given if the decoding does not succeed
+--   while in the particular byte sequence for a PHP string.
+--
+-- * 'PHPSessionCouldntDecodePast' is given if the decoding does not succeed while
+--   decoding common byte sequences which are composed mainly of 'PHPSessionAttr'
+--   forms.
+--
+-- * 'PHPSessionValueNotFullyDecoded' is given if the byte sequence is not fully
+--   decoded to a 'PHPSessionValue' when using decodePHPSessionValue or
+--   decodePHPSessionValueEither.
+--
+-- * 'PHPSessionNotFullyDecoded' is given.if the byte sequence is not fully
+--   decoded to a 'PHPSessionVariableList' when using decodePHPSession or
+--   decodePHPSessionEither.
+--
+data PHPSessionDecodingError =
+  PHPSessionStringEmpty |
+  PHPSessionCouldntDecodeSerializablePast LBS.ByteString |
+  PHPSessionCouldntDecodeObjectPast LBS.ByteString |
+  PHPSessionCouldntDecodeStringPast LBS.ByteString |
+  PHPSessionCouldntDecodePast LBS.ByteString |
+  PHPSessionValueNotFullyDecoded PHPSessionValue LBS.ByteString |
+  PHPSessionNotFullyDecoded PHPSessionVariableList LBS.ByteString
+  
+instance Show PHPSessionDecodingError where
+  show (PHPSessionStringEmpty) = "PHPSessionStringEmpty"
+  show (PHPSessionCouldntDecodeSerializablePast str) = "PHPSessionCouldntDecodeSerializablePast " ++ show str
+  show (PHPSessionCouldntDecodeObjectPast str) = "PHPSessionCouldntDecodeObjectPast " ++ show str
+  show (PHPSessionCouldntDecodeStringPast str) = "PHPSessionCouldntDecodeStringPast " ++ show str
+  show (PHPSessionCouldntDecodePast str) = "PHPSessionCouldntDecodePast " ++ show str
+  show (PHPSessionValueNotFullyDecoded val str) = "PHPSessionNotFullyDecoded " ++ show val ++ " ... " ++ show str
+  show (PHPSessionNotFullyDecoded val str) = "PHPSessionNotFullyDecoded " ++ show val ++ " ... " ++ show str
+
+instance Eq PHPSessionDecodingError where
+  PHPSessionStringEmpty == PHPSessionStringEmpty = True
+  PHPSessionCouldntDecodeSerializablePast str == PHPSessionCouldntDecodeSerializablePast str' = str == str'
+  PHPSessionCouldntDecodeObjectPast str == PHPSessionCouldntDecodeObjectPast str' = str == str'
+  PHPSessionCouldntDecodeStringPast str == PHPSessionCouldntDecodeStringPast str' = str == str'
+  PHPSessionCouldntDecodePast str == PHPSessionCouldntDecodePast str' = str == str'
+  PHPSessionValueNotFullyDecoded a b == PHPSessionValueNotFullyDecoded a' b' = a == a' && b == b'
+  PHPSessionNotFullyDecoded a b == PHPSessionNotFullyDecoded a' b' = a == a' && b == b'
+  _ == _ = False
+  
