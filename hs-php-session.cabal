@@ -1,5 +1,5 @@
 name:                hs-php-session
-version:             0.0.9.2
+version:             0.0.9.3
 synopsis:            PHP session and values serialization
 description:         
     A library for encoding and decoding serialized PHP sessions in the format
@@ -24,6 +24,9 @@ library
   exposed-modules:
     Data.PHPSession
     Data.PHPSession.Types
+    Data.PHPSession.Conv
+    Data.PHPSession.ImplicitConv.ConvBool
+    Data.PHPSession.ImplicitConv.PHPTypeCoercion
   -- other-modules:       
   build-depends:       
                        base == 4.*,
