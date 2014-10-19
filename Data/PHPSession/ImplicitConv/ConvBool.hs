@@ -15,8 +15,11 @@ module Data.PHPSession.ImplicitConv.ConvBool (
     boolDefaultTrueFrom,
     -- * Type coercion from 'PHPSessionValue'
     boolFromPHPLooseComparisonWithTrue,
+    boolFromPHPLooseComparisonWithTrueNullable,
     boolFromReducedLooseCoercionSafe,
     boolFromReducedLooseCoercion,
+    boolFromReducedLooseCoercionNullableSafe,
+    boolFromReducedLooseCoercionNullable,
     boolFromESBooleanCoercionRules,
     boolFromPerlBooleanCoercionRules,
     boolFromPythonBooleanCoercionRules,
@@ -89,6 +92,16 @@ boolFromPHPLooseComparisonWithTrue var =
     PHPSessionValueObjectSerializeable _ _ -> True
     PHPSessionValueMisc _ _ -> True
 
+-- | A version of 'boolFromPHPLooseComparisonWithTrue' where @/NULL/@ returns 'Nothing'
+-- and all other inputs returns 'Just' with the boolean result.
+boolFromPHPLooseComparisonWithTrueNullable :: PHPSessionValue -> Maybe Bool
+boolFromPHPLooseComparisonWithTrueNullable var =
+  case var of
+    PHPSessionValueNull -> Nothing
+    _ | var /= PHPSessionValueNull ->
+      Just $ boolFromPHPLooseComparisonWithTrue var
+
+
 -- | Coerces a 'PHPSessionValue' to a 'Bool' through a reduced subset of valid values.
 -- 'boolFromReducedLooseCoercionSafe' and 'boolFromReducedLooseCoercion' are
 -- functions intended for testing a variable for a boolean \"confirmation\" from a
@@ -131,6 +144,31 @@ boolFromReducedLooseCoercion var =
     case boolFromReducedLooseCoercionSafe var of
       Left message -> error message
       Right var' -> var'
+
+-- | A version of 'boolFromReducedLooseCoercionSafe' where @/NULL/@ returns 'Right' 'Nothing'
+-- and all other inputs returns 'Right' 'Just' with the boolean result. May return 'Left'
+-- with an error message if given invalid values.
+--
+boolFromReducedLooseCoercionNullableSafe :: PHPSessionValue -> Either String (Maybe Bool)
+boolFromReducedLooseCoercionNullableSafe var =
+  case var of
+    PHPSessionValueNull -> Right Nothing
+    _ | var /= PHPSessionValueNull ->
+      case boolFromReducedLooseCoercionSafe var of
+        Left message -> Left message
+        Right result -> Right (Just result)
+
+-- | A version of 'boolFromReducedLooseCoercion' where @/NULL/@ returns 'Nothing'
+-- and all other inputs returns 'Just' with the boolean result. May throw an
+-- exception on invalid values.
+--
+boolFromReducedLooseCoercionNullable :: PHPSessionValue -> Maybe Bool
+boolFromReducedLooseCoercionNullable var =
+  case var of
+    PHPSessionValueNull -> Nothing
+    _ | var /= PHPSessionValueNull ->
+      Just $ boolFromReducedLooseCoercion var
+
 
 -- | Alternative boolean coercion based on the JS/ES boolean conversion rules. For
 -- these conversion rules, refer to the description in section 9.2 of the ECMA 262 

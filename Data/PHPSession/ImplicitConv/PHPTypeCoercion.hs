@@ -14,8 +14,14 @@
 -- * Conversions that are documented as undefined behaviour in the PHP manual
 --   will throw definite exceptions with these functions.
 --
+-- * A significant difference from PHP's conversion rules is that @/NULL/@
+--   cannot be directly converted to any data type except to 'Bool', otherwise
+--   @/NULL/@ has to be handled by using the type @'Maybe' a@ to capture
+--   nullable values.
+--
 -- * Objects that implement Serializable are not convertible to any other type
---   at all as their value systems are not interpretable in a meaningful manner.
+--   at all as their value systems are not directly interpretable in a meaningful
+--   manner.
 --
 -- * Numbers can be converted to strings, but only strings that satisfy
 --   @reads str = [(value, \"\")]@ can be converted back to numbers.
@@ -28,11 +34,8 @@ module Data.PHPSession.ImplicitConv.PHPTypeCoercion (
     -- * Convert from 'PHPSessionValue'
     convFromPHPImplicit,
     convFromPHPImplicitSafe,
-    convFromPHPImplicitNullable,
-    convFromPHPImplicitNullableSafe,
     -- * Type classes
-    ConversionFromPHPImplicitValueOrMismatch(..),
-    ConversionFromPHPImplicitValueNullableOrMismatch(..)
+    ConversionFromPHPImplicitValueOrMismatch(..)
 ) where
 
 import qualified Data.ByteString.Lazy.Char8 as LBS
@@ -46,117 +49,140 @@ import Data.PHPSession.Conv
 class ConversionFromPHPImplicitValueOrMismatch b where
   convFromPHPImplicitOM :: PHPSessionValue -> Either String b
 
-class ConversionFromPHPImplicitValueNullableOrMismatch b where
-  convFromPHPImplicitNullableOM :: PHPSessionValue -> Either String b
 
-
-instance ConversionFromPHPImplicitValueOrMismatch a => ConversionFromPHPImplicitValueNullableOrMismatch (Maybe a) where
-  convFromPHPImplicitNullableOM PHPSessionValueNull = Right Nothing
-  convFromPHPImplicitNullableOM var =
-    case convFromPHPImplicitOM var of
-      Left message -> Left message
-      Right var' -> Right (Just var')
-
--- | 'convFromPHPImplicitNullable' and 'convFromPHPImplicitNullableSafe' are
--- functions that convert PHP values stored as 'PHPSessionValue' into Haskell typed
--- values where there is the possibility that the value being sought may be @/NULL/@.
--- As with 'convFromPHPImplicit' and 'convFromPHPImplicitSafe', these functions
--- coerce value types into other types as needed in several cases.
---
-convFromPHPImplicitNullable
-  :: ConversionFromPHPImplicitValueNullableOrMismatch b =>
-     PHPSessionValue -> b
-convFromPHPImplicitNullable var =
-    case convFromPHPImplicitNullableOM var of
-      Left message -> error message
-      Right var' -> var'
-
--- | 'convFromPHPImplicitNullableSafe' is a version of
--- 'convFromPHPImplicitNullable' that returns a 'Left' with an error message 
--- instead of throwing a run time exception.
---
-convFromPHPImplicitNullableSafe
-  :: ConversionFromPHPImplicitValueNullableOrMismatch b =>
-     PHPSessionValue -> Either String b
-convFromPHPImplicitNullableSafe var = convFromPHPImplicitNullableOM var
-
+isScalarForArray v =
+  case v of
+    PHPSessionValueBool _     -> True
+    PHPSessionValueFloat _    -> True
+    PHPSessionValueInt _      -> True
+    PHPSessionValueString _   -> True
+    PHPSessionValueNull       -> False
+    PHPSessionValueObjectSerializeable _ _ -> False
+    PHPSessionValueMisc _ _   -> False
+    PHPSessionValueObject _ _ -> False
+    PHPSessionValueArray _    -> False
+  
 --
 -- Refer to the following reference on array conversion at: 
 -- <http://php.net/manual/en/language.types.array.php#language.types.array.casting>
 --
 instance ConversionFromPHPImplicitValueOrMismatch [(PHPSessionValue,PHPSessionValue)] where
-  convFromPHPImplicitOM (PHPSessionValueBool b) = Right ([(PHPSessionValueInt 0, PHPSessionValueBool b)])
-  convFromPHPImplicitOM (PHPSessionValueFloat a) = Right ([(PHPSessionValueInt 0, PHPSessionValueFloat a)])
-  convFromPHPImplicitOM (PHPSessionValueInt i) = Right ([(PHPSessionValueInt 0, PHPSessionValueInt i)])
-  convFromPHPImplicitOM (PHPSessionValueString a) = Right ([(PHPSessionValueInt 0, PHPSessionValueString a)])
+  -- Not converted to array:
+  -- * PHPSessionValueNull (differs from PHP: PHP creates empty array)
+  -- * PHPSessionValueObjectSerializeable
+  -- * PHPSessionValueMisc
+  convFromPHPImplicitOM v | isScalarForArray v = arrayScalarAsValue v
   convFromPHPImplicitOM (PHPSessionValueObject _cls arr) = Right arr
-  convFromPHPImplicitOM (PHPSessionValueArray var) = Right var
+  convFromPHPImplicitOM (PHPSessionValueArray arr)       = Right arr
   convFromPHPImplicitOM v = mismatchError v "[(PHPSessionValue,PHPSessionValue)]"
 
-instance ConversionFromPHPImplicitValueOrMismatch a => ConversionFromPHPImplicitValueOrMismatch [(a,PHPSessionValue)] where
- -- convFromPHPImplicitOM (PHPSessionValueBool b) = Right ([(PHPSessionValueInt 0, PHPSessionValueBool b)])
- -- convFromPHPImplicitOM (PHPSessionValueFloat a) = Right ([(PHPSessionValueInt 0, PHPSessionValueFloat a)])
- -- convFromPHPImplicitOM (PHPSessionValueInt i) = Right ([(PHPSessionValueInt 0, PHPSessionValueInt i)])
- -- convFromPHPImplicitOM (PHPSessionValueString a) = Right ([(PHPSessionValueInt 0, PHPSessionValueString a)])
- -- convFromPHPImplicitOM (PHPSessionValueObject _cls arr) = Right arr
-  convFromPHPImplicitOM (PHPSessionValueArray vars) =
-    case L.foldl' ontoTuple (Right []) vars of
-      Left str -> Left str
-      Right lst -> Right $ reverse lst
-    where
-      ontoTuple (Left str) _ = Left str
-      ontoTuple (Right lst) (l,r) = 
-        let l' = convFromPHPImplicitOM l
-         in case l' of
-              Left errl -> Left errl
-              Right l'' ->
-                Right ((l'',r) : lst)
-  convFromPHPImplicitOM v = mismatchError v "ConversionFromPHPValueOrMismatch a => ConversionFromPHPValueOrMismatch [(a,PHPSessionValue)]"
+
+arrayScalarAsValue :: PHPSessionValue -> Either String [(PHPSessionValue,PHPSessionValue)]
+arrayScalarAsValue r =
+  Right ([(PHPSessionValueInt 0, r)])
+
+convArrayScalarLeftSide :: ConversionFromPHPImplicitValueOrMismatch a => PHPSessionValue -> Either String [(a,PHPSessionValue)]
+convArrayScalarLeftSide r = 
+  case convFromPHPImplicitOM (PHPSessionValueInt 0) of
+    Left message -> Left message
+    Right index ->
+      Right ([(index, r)])
+
+convArrayListLeftSide :: ConversionFromPHPImplicitValueOrMismatch a => [(PHPSessionValue,PHPSessionValue)] -> Either String [(a,PHPSessionValue)]
+convArrayListLeftSide vars =
+  case L.foldl' ontoTuple (Right []) vars of
+    Left str -> Left str
+    Right lst -> Right $ reverse lst
+  where
+    ontoTuple (Left str) _ = Left str
+    ontoTuple (Right lst) (l,r) = 
+      let l' = convFromPHPImplicitOM l
+       in case l' of
+            Left errl -> Left errl
+            Right l'' ->
+              Right ((l'',r) : lst)
 
 instance ConversionFromPHPImplicitValueOrMismatch b => ConversionFromPHPImplicitValueOrMismatch [(PHPSessionValue,b)] where
- -- convFromPHPImplicitOM (PHPSessionValueBool b) = Right ([(PHPSessionValueInt 0, PHPSessionValueBool b)])
- -- convFromPHPImplicitOM (PHPSessionValueFloat a) = Right ([(PHPSessionValueInt 0, PHPSessionValueFloat a)])
- -- convFromPHPImplicitOM (PHPSessionValueInt i) = Right ([(PHPSessionValueInt 0, PHPSessionValueInt i)])
- -- convFromPHPImplicitOM (PHPSessionValueString a) = Right ([(PHPSessionValueInt 0, PHPSessionValueString a)])
- -- convFromPHPImplicitOM (PHPSessionValueObject _cls arr) = Right arr
-  convFromPHPImplicitOM (PHPSessionValueArray vars) =
-    case L.foldl' ontoTuple (Right []) vars of
-      Left str -> Left str
-      Right lst -> Right $ reverse lst
-    where
-      ontoTuple (Left str) _ = Left str
-      ontoTuple (Right lst) (l,r) = 
-        let r' = convFromPHPImplicitOM r
-         in case r' of
-              Left errr -> Left errr
-              Right r'' ->
-                Right $ (l,r'') : lst
+  -- Not converted to array:
+  -- * PHPSessionValueNull (differs from PHP: PHP creates empty array)
+  -- * PHPSessionValueObjectSerializeable
+  -- * PHPSessionValueMisc
+  convFromPHPImplicitOM v | isScalarForArray v = convArrayScalarRightSide v convFromPHPImplicitOM
+  convFromPHPImplicitOM (PHPSessionValueObject _cls arr) = convArrayListRightSide arr convFromPHPImplicitOM
+  convFromPHPImplicitOM (PHPSessionValueArray arr)       = convArrayListRightSide arr convFromPHPImplicitOM
   convFromPHPImplicitOM v = mismatchError v "ConversionFromPHPValueOrMismatch b => ConversionFromPHPValueOrMismatch [(PHPSessionValue,b)]"
 
+
+-- convArrayScalarRightSide :: ConversionFromPHPImplicitValueOrMismatch b => PHPSessionValue -> Either String [(PHPSessionValue,b)]
+convArrayScalarRightSide r conv =
+  case conv r of
+    Left message -> Left message
+    Right r' -> Right ([(PHPSessionValueInt 0, r')])
+
+-- convArrayListRightSide :: ConversionFromPHPImplicitValueOrMismatch b => [(PHPSessionValue,PHPSessionValue)] -> Either String [(PHPSessionValue,b)]
+convArrayListRightSide vars conv =
+  case L.foldl' ontoTuple (Right []) vars of
+    Left str -> Left str
+    Right lst -> Right $ reverse lst
+  where
+    ontoTuple (Left str) _ = Left str
+    ontoTuple (Right lst) (l,r) = 
+      case conv r of
+        Left errr -> Left errr
+        Right r'' ->
+          Right $ (l,r'') : lst
+
+
 instance (ConversionFromPHPImplicitValueOrMismatch a, ConversionFromPHPImplicitValueOrMismatch b) => ConversionFromPHPImplicitValueOrMismatch [(a,b)] where
- -- convFromPHPImplicitOM (PHPSessionValueBool b) = Right ([(PHPSessionValueInt 0, PHPSessionValueBool b)])
- -- convFromPHPImplicitOM (PHPSessionValueFloat a) = Right ([(PHPSessionValueInt 0, PHPSessionValueFloat a)])
- -- convFromPHPImplicitOM (PHPSessionValueInt i) = Right ([(PHPSessionValueInt 0, PHPSessionValueInt i)])
- -- convFromPHPImplicitOM (PHPSessionValueString a) = Right ([(PHPSessionValueInt 0, PHPSessionValueString a)])
- -- convFromPHPImplicitOM (PHPSessionValueObject _cls arr) = Right arr
-  convFromPHPImplicitOM (PHPSessionValueArray vars) =
-    case L.foldl' ontoTuple (Right []) vars of
-      Left str -> Left str
-      Right lst -> Right $ reverse lst
-    where
-      ontoTuple (Left str) _ = Left str
-      ontoTuple (Right lst) (l,r) = 
-        let l' = convFromPHPImplicitOM l
-            r' = convFromPHPImplicitOM r
-         in case l' of
-              Left errl -> Left errl
-              Right l'' ->
-                case r' of
-                  Left errr -> Left errr
-                  Right r'' ->
-                    Right ((l'',r'') : lst)
+  -- Not converted to array:
+  -- * PHPSessionValueNull (differs from PHP: PHP creates empty array)
+  -- * PHPSessionValueObjectSerializeable
+  -- * PHPSessionValueMisc
+  convFromPHPImplicitOM v | isScalarForArray v = convArrayScalarBothSides v convFromPHPImplicitOM
+  convFromPHPImplicitOM (PHPSessionValueObject _cls arr) = convArrayListBothSides arr convFromPHPImplicitOM
+  convFromPHPImplicitOM (PHPSessionValueArray arr)       = convArrayListBothSides arr convFromPHPImplicitOM
   convFromPHPImplicitOM v = mismatchError v "(ConversionFromPHPValueOrMismatch a, ConversionFromPHPValueOrMismatch b) => ConversionFromPHPValueOrMismatch [(a,b)]"
 
+
+convArrayScalarBothSides
+  :: ConversionFromPHPImplicitValueOrMismatch t1 =>
+     t -> (t -> Either String t2) -> Either String [(t1, t2)]
+convArrayScalarBothSides r conv = 
+  case convFromPHPImplicitOM (PHPSessionValueInt 0) of
+    Left message -> Left message
+    Right index ->
+      case conv r of
+        Left message' -> Left message'
+        Right r' -> Right ([(index, r')])
+
+-- convArrayListBothSides :: (ConversionFromPHPImplicitValueOrMismatch a, ConversionFromPHPImplicitValueOrMismatch b) => [(PHPSessionValue,PHPSessionValue)] -> Either String [(a,b)]
+convArrayListBothSides vars conv = 
+  case L.foldl' ontoTuple (Right []) vars of
+    Left str -> Left str
+    Right lst -> Right $ reverse lst
+  where
+    ontoTuple (Left str) _ = Left str
+    ontoTuple (Right lst) (l,r) = 
+      case convFromPHPImplicitOM l of
+        Left errl -> Left errl
+        Right l'' ->
+          case conv r of
+            Left errr -> Left errr
+            Right r'' ->
+              Right ((l'',r'') : lst)
+
+{-
+-- Sequenceable: 
+instance ConversionFromPHPImplicitValueOrMismatch [PHPSessionValue] where
+  -- Not converted to array:
+  -- * PHPSessionValueNull (differs from PHP: PHP creates empty array)
+  -- * PHPSessionValueObjectSerializeable
+  -- * PHPSessionValueMisc
+  convFromPHPImplicitOM v | isScalarForArray v = Right [v]
+  convFromPHPImplicitOM (PHPSessionValueObject _cls arr) = Right $ map (\(_,a) -> a) arr
+  convFromPHPImplicitOM (PHPSessionValueArray arr) = Right $ map (\(_,a) -> a) arr
+  convFromPHPImplicitOM v = mismatchError v "[PHPSessionValue]"
+-}
 
 -- Refer to Data.PHPSession.ImplicitConv.ConvBool for the boolean implicit
 -- conversion.
@@ -190,8 +216,12 @@ instance ConversionFromPHPImplicitValueOrMismatch Double where
 -- <http://php.net/manual/en/language.types.integer.php#language.types.integer.casting>
 --
 instance ConversionFromPHPImplicitValueOrMismatch Int where
-  -- PHPSessionValueArray, PHPSessionValueObject, PHPSessionValueNull and
-  -- PHPSessionValueObjectSerializeable, PHPSessionValueMisc conversions to Int are undefined
+  -- Not converted to Int:
+  -- * PHPSessionValueArray
+  -- * PHPSessionValueObject
+  -- * PHPSessionValueNull
+  -- * PHPSessionValueObjectSerializeable
+  -- * PHPSessionValueMisc
   convFromPHPImplicitOM (PHPSessionValueBool b) = Right $ if b then 1 else 0
   convFromPHPImplicitOM (PHPSessionValueFloat lr) =
     Right $ case lr of
@@ -207,7 +237,7 @@ instance ConversionFromPHPImplicitValueOrMismatch Int where
           [] -> let v = PHPSessionValueString str
                  in mismatchError v "Int"
     where str' = LBS.unpack str
-  convFromPHPImplicitOM v = mismatchError v "Integral n => n"
+  convFromPHPImplicitOM v = mismatchError v "Int"
 instance ConversionFromPHPImplicitValueOrMismatch Int32 where
   convFromPHPImplicitOM var =
     let var' = convFromPHPImplicitOM var :: Either String Int
@@ -223,12 +253,14 @@ instance ConversionFromPHPImplicitValueOrMismatch Int64 where
 
 
 instance ConversionFromPHPImplicitValueOrMismatch (PHPSessionClassName, [(PHPSessionValue,PHPSessionValue)]) where
-  -- Not converted: PHPSessionValueObjectSerializeable, PHPSessionValueMisc
+  -- Not converted to Object:
+  -- * PHPSessionValueObjectSerializeable
+  -- * PHPSessionValueMisc
   convFromPHPImplicitOM (PHPSessionValueArray arr) = Right (phpStdClass,arr)
-  convFromPHPImplicitOM (PHPSessionValueBool b) = Right (phpStdClass,[(phpScalarMember, PHPSessionValueBool b)])
+  convFromPHPImplicitOM (PHPSessionValueBool b)  = Right (phpStdClass,[(phpScalarMember, PHPSessionValueBool b)])
   convFromPHPImplicitOM (PHPSessionValueFloat a) = Right (phpStdClass,[(phpScalarMember, PHPSessionValueFloat a)])
-  convFromPHPImplicitOM (PHPSessionValueInt i) = Right (phpStdClass,[(phpScalarMember, PHPSessionValueInt i)])
-  convFromPHPImplicitOM (PHPSessionValueNull) = Right (phpStdClass,[])
+  convFromPHPImplicitOM (PHPSessionValueInt i)   = Right (phpStdClass,[(phpScalarMember, PHPSessionValueInt i)])
+  convFromPHPImplicitOM (PHPSessionValueNull)    = Right (phpStdClass,[])
   convFromPHPImplicitOM (PHPSessionValueObject cls arr) = Right (cls,arr)
   convFromPHPImplicitOM (PHPSessionValueString a) = Right (phpStdClass,[(phpScalarMember, PHPSessionValueString a)])
   convFromPHPImplicitOM v = mismatchError v "(PHPSessionClassName, [(PHPSessionValue,PHPSessionValue)])"
@@ -237,17 +269,27 @@ phpStdClass = PHPSessionClassName "stdClass"
 phpScalarMember = PHPSessionValueString "scalar"
 
 instance ConversionFromPHPImplicitValueOrMismatch (PHPSessionClassName, LBS.ByteString) where
-  -- Not converted: PHPSessionValueArray, PHPSessionValueBool, PHPSessionValueFloat,
-  -- PHPSessionValueInt, PHPSessionValueNull, PHPSessionValueObject, PHPSessionValueString,
-  -- PHPSessionValueMisc
+  -- Not converted to (and from) objects implementing Serializable:
+  -- * PHPSessionValueArray
+  -- * PHPSessionValueBool
+  -- * PHPSessionValueFloat,
+  -- * PHPSessionValueInt
+  -- * PHPSessionValueNull
+  -- * PHPSessionValueObject
+  -- * PHPSessionValueString,
+  -- * PHPSessionValueMisc
   convFromPHPImplicitOM (PHPSessionValueObjectSerializeable cls arr) = Right (cls,arr)
   convFromPHPImplicitOM v = mismatchError v "(PHPSessionClassName, LBS.ByteString)"
 
 --
 --
 instance ConversionFromPHPImplicitValueOrMismatch LBS.ByteString where
-  -- Not converted: PHPSessionValueArray, PHPSessionValueObject,
-  -- PHPSessionValueObjectSerializeable, PHPSessionValueMisc
+  -- Not converted to string:
+  -- * PHPSessionValueArray
+  -- * PHPSessionValueObject
+  -- * PHPSessionValueObjectSerializeable
+  -- * PHPSessionValueNull (differs from PHP: PHP creates empty string "")
+  -- * PHPSessionValueMisc
   convFromPHPImplicitOM (PHPSessionValueBool b) =
      case b of
        True  -> Right "1"
@@ -258,8 +300,9 @@ instance ConversionFromPHPImplicitValueOrMismatch LBS.ByteString where
       Right f -> (Right . LBS.pack . show) f
   convFromPHPImplicitOM (PHPSessionValueInt i) =
     (Right . LBS.pack . show) i
-  convFromPHPImplicitOM (PHPSessionValueNull) = Right ""
+  -- Unused: convFromPHPImplicitOM (PHPSessionValueNull) = Right ""
   convFromPHPImplicitOM (PHPSessionValueString var) = Right var
+  convFromPHPImplicitOM v = mismatchError v "ByteString"
 
 instance ConversionFromPHPImplicitValueOrMismatch BS.ByteString where
   convFromPHPImplicitOM var =
@@ -268,6 +311,13 @@ instance ConversionFromPHPImplicitValueOrMismatch BS.ByteString where
           Left message -> Left message
           Right str -> Right (BS.concat $ LBS.toChunks str)
 
+instance ConversionFromPHPImplicitValueOrMismatch a => ConversionFromPHPImplicitValueOrMismatch (Maybe a) where
+  convFromPHPImplicitOM PHPSessionValueNull = Right Nothing
+  convFromPHPImplicitOM v =
+    case convFromPHPImplicitOM v of
+      Left s -> Left s
+      Right b' -> Right (Just b')
+  
 
 mismatchError v totype =
   Left $ "Type mismatch converting from (" ++ show v ++ ") to " ++ totype
@@ -289,6 +339,9 @@ mismatchError v totype =
 --
 -- >>> convFromPHPImplicit arrayOfPHPStrings :: [(LBS.ByteString,LBS.ByteString)]
 -- [("0","Hello"),("1","World")]
+--
+-- Where there is the possibility that the value being sought may be @/NULL/@, the
+-- type should be @('Maybe' a)@.
 --
 convFromPHPImplicit :: ConversionFromPHPImplicitValueOrMismatch b => PHPSessionValue -> b
 convFromPHPImplicit var =

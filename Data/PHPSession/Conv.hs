@@ -10,8 +10,7 @@
 -- Non-coerced translation between 'PHPSessionValue' and various Haskell types.
 -- 'convTo' provide convenient translation from native types to 'PHPSessionValue',
 -- while translation from 'PHPSessionValue' to native types is provided through
--- 'convFrom', 'convFromSafe', 'convFromNullable', 'convFromNullableSafe'
--- provide .
+-- 'convFrom' and 'convFromSafe'.
 -- 
 module Data.PHPSession.Conv (
     -- * Convert to 'PHPSessionValue'
@@ -19,12 +18,9 @@ module Data.PHPSession.Conv (
     -- * Convert from 'PHPSessionValue'
     convFrom,
     convFromSafe,
-    convFromNullable,
-    convFromNullableSafe,
     -- * Type classes
     ConversionToPHPValue(..),
-    ConversionFromPHPValueOrMismatch(..),
-    ConversionFromPHPValueNullableOrMismatch(..)
+    ConversionFromPHPValueOrMismatch(..)
 ) where
 
 import qualified Data.ByteString.Lazy.Char8 as LBS
@@ -53,10 +49,6 @@ class ConversionToPHPValue a where
 
 class ConversionFromPHPValueOrMismatch b where
   convFromOM :: PHPSessionValue -> Either String b
-
-class ConversionFromPHPValueNullableOrMismatch b where
-  convFromNullableOM :: PHPSessionValue -> Either String b
-
 
 instance ConversionToPHPValue [(PHPSessionValue,PHPSessionValue)] where
   convTo' var = PHPSessionValueArray var
@@ -95,39 +87,6 @@ instance ConversionToPHPValue LBS.ByteString where
 instance ConversionToPHPValue BS.ByteString where
   convTo' var = PHPSessionValueString (LBS.fromChunks [var])
 
-
-
-instance ConversionFromPHPValueOrMismatch a => ConversionFromPHPValueNullableOrMismatch (Maybe a) where
-  convFromNullableOM PHPSessionValueNull = Right Nothing
-  convFromNullableOM var =
-    case convFromOM var of
-      Left message -> Left message
-      Right var' -> Right (Just var')
-
--- | 'convFromNullable' and 'convFromNullableSafe' are convenience functions that
--- convert PHP values stored as 'PHPSessionValue' into Haskell typed values
--- where there is the possibility that the value being sought may be @/NULL/@.
--- As with 'convFrom' and 'convFromSafe', these nullable functions are non-coerced
--- conversions that signal when a type will be altered if the desired type were
--- to be provided.
---
-convFromNullable
-  :: ConversionFromPHPValueNullableOrMismatch b =>
-     PHPSessionValue -> b
-convFromNullable var =
-    case convFromNullableOM var of
-      Left message -> error message
-      Right var' -> var'
-
--- | 'convFromNullableSafe' is a version of 'convFromNullable' that returns a
--- 'Left' with an error message instead of throwing a run time exception.
---
-convFromNullableSafe
-  :: ConversionFromPHPValueNullableOrMismatch b =>
-     PHPSessionValue -> Either String b
-convFromNullableSafe var = convFromNullableOM var
-
-
 instance ConversionFromPHPValueOrMismatch [(PHPSessionValue,PHPSessionValue)] where
   convFromOM (PHPSessionValueArray var) = Right var
   convFromOM v = mismatchError v "[(PHPSessionValue,PHPSessionValue)]"
@@ -149,37 +108,43 @@ instance ConversionFromPHPValueOrMismatch a => ConversionFromPHPValueOrMismatch 
 
 instance ConversionFromPHPValueOrMismatch b => ConversionFromPHPValueOrMismatch [(PHPSessionValue,b)] where
   convFromOM (PHPSessionValueArray vars) =
-    case L.foldl' ontoTuple (Right []) vars of
-      Left str -> Left str
-      Right lst -> Right $ reverse lst
-    where
-      ontoTuple (Left str) _ = Left str
-      ontoTuple (Right lst) (l,r) = 
-        let r' = convFromOM r
-         in case r' of
-              Left errr -> Left errr
-              Right r'' ->
-                Right $ (l,r'') : lst
+    convArrayRightSide vars convFromOM
   convFromOM v = mismatchError v "ConversionFromPHPValueOrMismatch b => ConversionFromPHPValueOrMismatch [(PHPSessionValue,b)]"
+
+convArrayRightSide vars conv =
+  case L.foldl' ontoTuple (Right []) vars of
+    Left str -> Left str
+    Right lst -> Right $ reverse lst
+  where
+    ontoTuple (Left str) _ = Left str
+    ontoTuple (Right lst) (l,r) = 
+      case conv r of
+        Left errr -> Left errr
+        Right r'' ->
+          Right $ (l, r'') : lst
 
 instance (ConversionFromPHPValueOrMismatch a, ConversionFromPHPValueOrMismatch b) => ConversionFromPHPValueOrMismatch [(a,b)] where
   convFromOM (PHPSessionValueArray vars) =
-    case L.foldl' ontoTuple (Right []) vars of
-      Left str -> Left str
-      Right lst -> Right $ reverse lst
-    where
-      ontoTuple (Left str) _ = Left str
-      ontoTuple (Right lst) (l,r) = 
-        let l' = convFromOM l
-            r' = convFromOM r
-         in case l' of
-              Left errl -> Left errl
-              Right l'' ->
-                case r' of
-                  Left errr -> Left errr
-                  Right r'' ->
-                    Right ((l'',r'') : lst)
+    convArrayBothSides vars convFromOM
   convFromOM v = mismatchError v "(ConversionFromPHPValueOrMismatch a, ConversionFromPHPValueOrMismatch b) => ConversionFromPHPValueOrMismatch [(a,b)]"
+
+convArrayBothSides vars conv =
+  case L.foldl' ontoTuple (Right []) vars of
+    Left str -> Left str
+    Right lst -> Right $ reverse lst
+  where
+    ontoTuple (Left str) _ = Left str
+    ontoTuple (Right lst) (l,r) = 
+      let l' = convFromOM l
+          r' = conv r
+       in case l' of
+            Left errl -> Left errl
+            Right l'' ->
+              case r' of
+                Left errr -> Left errr
+                Right r'' ->
+                  Right ((l'', r'') : lst)
+
 
 instance ConversionFromPHPValueOrMismatch Bool where
   convFromOM (PHPSessionValueBool var) = Right var
@@ -246,6 +211,13 @@ instance ConversionFromPHPValueOrMismatch BS.ByteString where
   convFromOM (PHPSessionValueString var) = (Right . BS.concat . LBS.toChunks) var
   convFromOM v = mismatchError v "ByteString"
 
+instance ConversionFromPHPValueOrMismatch a => ConversionFromPHPValueOrMismatch (Maybe a) where
+  convFromOM PHPSessionValueNull = Right Nothing
+  convFromOM v =
+    case convFromOM v of
+      Left s -> Left s
+      Right b' -> Right (Just b')
+
 
 mismatchError v totype =
   Left $ "Type mismatch converting from (" ++ show v ++ ") to " ++ totype
@@ -270,6 +242,9 @@ mismatchError v totype =
 --
 -- >>> convFrom arrayOfPHPStrings :: [(Int,Int)]
 -- *** Exception: Type mismatch converting from (PHPSessionValueString "Hello") to Int
+--
+-- Where there is the possibility that the value being sought may be @/NULL/@, the
+-- type should be @('Maybe' a)@.
 --
 convFrom :: ConversionFromPHPValueOrMismatch b => PHPSessionValue -> b
 convFrom var =
