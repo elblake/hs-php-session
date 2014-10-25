@@ -50,6 +50,9 @@ class ConversionToPHPValue a where
 class ConversionFromPHPValueOrMismatch b where
   convFromOM :: PHPSessionValue -> Either String b
 
+instance ConversionToPHPValue PHPSessionValue where
+  convTo' var = var
+
 instance ConversionToPHPValue [(PHPSessionValue,PHPSessionValue)] where
   convTo' var = PHPSessionValueArray var
 

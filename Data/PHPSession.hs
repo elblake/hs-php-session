@@ -8,7 +8,30 @@
 -- Portability: portable
 --
 -- Encodes and decodes serialized PHP sessions in the format used by the \"php\" setting
--- for session.serialize_handler.
+-- for session.serialize_handler, as well as encodes and decodes PHP values in general
+-- in the format used by PHP's serialize/unserialize.
+--
+-- An example of using 'decodePHPSessionValue' and 'convFrom' to decode and convert values
+-- from the serialized contents of a 'LBS.ByteString' to @[('Int','LBS.ByteString')]@:
+--
+-- > import qualified Data.PHPSession as PHPSess
+-- >
+-- > getArrayValues :: LBS.ByteString -> [(Int, LBS.ByteString)]
+-- > getArrayValues encoded =
+-- >   case PHPSess.decodePHPSessionValue encoded of
+-- >     Nothing -> [] :: [(Int,LBS.ByteString)]
+-- >     Just b -> PHPSess.convFrom b
+-- 
+-- Starting from a value output from the following PHP code:
+--
+-- @/<?php/ /echo/ /serialize/(/array/(0 =\> \'Hello\', 5 => \'World\'));@
+-- @\/\* Outputs: \"a:2:{i:0;s:5:\\\"Hello\\\";i:5;s:5:\\\"World\\\";}\" \*\/@
+--
+-- The following can be computed:
+--
+-- >>> getArrayValues $ LBS.pack "a:2:{i:0;s:5:\"Hello\";i:5;s:5:\"World\";}"
+-- [(0,"Hello"),(5,"World")]
+--
 -- 
 
 module Data.PHPSession (
@@ -20,6 +43,11 @@ module Data.PHPSession (
     -- * Encode to 'ByteString'
     encodePHPSession,
     encodePHPSessionValue,
+    -- * Convert to 'PHPSessionValue'
+    convTo,
+    -- * Convert from 'PHPSessionValue'
+    convFrom,
+    convFromSafe,
     -- * Decode only part of a 'ByteString'
     decodePartialPHPSessionValue,
     decodePartialPHPSessionValueEither,
@@ -31,11 +59,13 @@ module Data.PHPSession (
 ) where
 
 import Data.PHPSession.Types
+import Data.PHPSession.Conv (convTo, convFrom, convFromSafe)
 
 import qualified Data.ByteString.Char8 as BS
 import qualified Data.ByteString.Lazy.Char8 as LBS
 import qualified Data.List as L
 import qualified Data.Char as C
+import Data.List (foldl')
 import Data.List (foldl')
 
 
