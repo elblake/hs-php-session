@@ -108,7 +108,9 @@ boolFromPHPLooseComparisonWithTrueNullable var =
 -- limited number of probable representations.
 --
 -- Values that result in 'True' are @/TRUE/@, non-zero numbers, \"1\" and \"-1\".
+--
 -- Values that result in 'False' are @/FALSE/@, zero numbers, @/NULL/@, \"0\" and \"\".
+--
 -- Values such as arrays, objects and arbitrary strings, are invalid with this
 -- function and return an error. In the case of 'boolFromReducedLooseCoercionSafe'
 -- this returns a 'Left' with the error message.
@@ -170,14 +172,15 @@ boolFromReducedLooseCoercionNullable var =
       Just $ boolFromReducedLooseCoercion var
 
 
--- | Alternative boolean coercion based on the JS/ES boolean conversion rules. For
--- these conversion rules, refer to the description in section 9.2 of the ECMA 262 
--- standard. A particular distinction of this function's coercion behaviour
--- compared to the other functions is that floating point NaN returns 'False'
--- instead of 'True'.
+-- | Alternative boolean coercion based on the JS/ES boolean conversion rules. 
+-- A particular distinction of the coercion behaviour of this function compared
+-- to the behaviour of other functions is that floating point NaN returns
+-- 'False' instead of 'True'. Values that return 'False' are @/NAN/@, 0,
+-- the empty string \"\", @/NULL/@ and @/FALSE/@
 --
--- PHP objects, arrays and objects implementing Serializable are all treated as
--- @Object@ for the purpose of this function.
+-- PHP objects, arrays and objects implementing Serializable always return 'True'.
+--
+-- JS/ES's boolean conversion is described in section 9.2 of the ECMA 262 standard.
 --
 boolFromESBooleanCoercionRules :: PHPSessionValue -> Bool
 boolFromESBooleanCoercionRules var =
@@ -200,39 +203,27 @@ boolFromESBooleanCoercionRules var =
         _   -> True
     PHPSessionValueMisc _ _ -> True
 
--- | Alternative boolean coercion based on non-overloaded Perl 5 rules. For these
--- conversion rules, refer to the description in the section \"Truth and Falsehood\"
+-- | Alternative boolean coercion based on non-overloaded Perl 5 rules. 
+-- Values that return 'False' are the empty string \"\", the string containing
+-- \"0\", 0, @/NULL/@ and @/FALSE/@.
+-- 
+-- PHP objects, arrays and objects implementing Serializable always return 'True'. 
+--
+-- Perl's boolean coercion rules are described in the section \"Truth and Falsehood\"
 -- of \"perlsyn\".
 -- <http://perldoc.perl.org/perlsyn.html#Truth-and-Falsehood>
---
--- The difference between the coercion rules in Perl and Python's is that the string
--- \"0\" is 'False' in Perl, and 'True' in Python.
---
--- PHP objects and arrays are treated as lists and the serialized byte sequences of 
--- objects implementing Serializable are treated as strings for the purpose of this
--- function.
 --
 boolFromPerlBooleanCoercionRules :: PHPSessionValue -> Bool
 boolFromPerlBooleanCoercionRules var =
   case var of
-    PHPSessionValueArray arr ->
-      case arr of
-        [] -> False
-        _  -> True
+    PHPSessionValueArray arr -> True
     PHPSessionValueBool b -> b
     PHPSessionValueFloat (Left i) -> i /= 0
     PHPSessionValueFloat (Right f) -> f /= 0
     PHPSessionValueInt i -> i /= 0
     PHPSessionValueNull -> False
-    PHPSessionValueObject _ arr ->
-      case arr of
-        [] -> False
-        _  -> True
-    PHPSessionValueObjectSerializeable _ bstr ->
-      case bstr of
-        "0" -> False
-        ""  -> False
-        _   -> True
+    PHPSessionValueObject _ arr -> True
+    PHPSessionValueObjectSerializeable _ bstr -> True
     PHPSessionValueString str ->
       case str of
         "0" -> False
@@ -240,17 +231,15 @@ boolFromPerlBooleanCoercionRules var =
         _   -> True
     PHPSessionValueMisc _ _ -> True
 
--- | Alternative boolean coercion based on Python rules. For these conversion rules
--- refer to the description in \"Truth Value Testing\" in section 3.1 of Python
--- 2.5's Library Reference.
+-- | Alternative boolean coercion based on non-overloaded Python rules. 
+-- Values that return 'False' are the empty array @/[]/@, the empty string
+-- \"\", 0, @/NULL/@ and @/FALSE/@.
+-- 
+-- PHP objects and objects implementing Serializable always return 'True'. 
+--
+-- Python's boolean conversion rules are described in \"Truth Value Testing\"
+-- in section 3.1 of Python 2.5's Library Reference.
 -- <https://docs.python.org/release/2.5.2/lib/truth.html>
---
--- PHP objects are treated as maps and the byte sequences of objects that implement
--- Serializable are treated as strings for the purpose of this function.
---
--- This convenience function does not replicate the behaviour of user-defined class
--- instances that implement @__nonzero__()@ or @__len__()@. Which would be
--- functionality that PHP objects would not implement anyway.
 --
 boolFromPythonBooleanCoercionRules :: PHPSessionValue -> Bool
 boolFromPythonBooleanCoercionRules var =
@@ -264,14 +253,8 @@ boolFromPythonBooleanCoercionRules var =
     PHPSessionValueFloat (Right f) -> f /= 0
     PHPSessionValueInt i -> i /= 0
     PHPSessionValueNull -> False
-    PHPSessionValueObject _ arr ->
-      case arr of
-        [] -> False
-        _  -> True
-    PHPSessionValueObjectSerializeable _ bstr ->
-      case bstr of
-        "" -> False
-        _  -> True
+    PHPSessionValueObject _ arr -> True
+    PHPSessionValueObjectSerializeable _ bstr -> True
     PHPSessionValueString str ->
       case str of
         "" -> False
@@ -279,8 +262,10 @@ boolFromPythonBooleanCoercionRules var =
     PHPSessionValueMisc _ _ -> True
 
 -- | Alternative boolean coercion based on Lua rules, all values are 'True' except
--- @/NULL/@ and @/FALSE/@. For these conversion rules, refer to the passage in
--- section 2.4.4 \"Control Structures\" of Lua 5.1's Manual.
+-- @/NULL/@ and @/FALSE/@.
+-- 
+-- For Lua's conversion rules, refer to the passage in section 2.4.4 \"Control
+-- Structures\" of Lua 5.1's Manual.
 -- <http://www.lua.org/manual/5.1/manual.html>
 --
 boolFromLuaBooleanCoercionRules :: PHPSessionValue -> Bool
