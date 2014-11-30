@@ -35,12 +35,12 @@
 -- 
 
 module Data.PHPSession (
-    -- * Decode from 'ByteString'
+    -- * Decode from 'LBS.ByteString'
     decodePHPSession,
     decodePHPSessionEither,
     decodePHPSessionValue,
     decodePHPSessionValueEither,
-    -- * Encode to 'ByteString'
+    -- * Encode to 'LBS.ByteString'
     encodePHPSession,
     encodePHPSessionValue,
     -- * Convert to 'PHPSessionValue'
@@ -191,8 +191,9 @@ decodePartialPHPSessionValueCommon input done couldntDecode =
                 (num, colrest) ->
                   let num' = read (LBS.unpack num)
                       (dat,rest') = LBS.splitAt num' $ LBS.drop 2 colrest
-                      rest'' = LBS.drop 1 rest' 
-                   in Just (PHPSessionValueObjectSerializeable (PHPSessionClassName cls') dat, rest'')
+                   in case LBS.splitAt 1 rest' of
+                        ("}", rest'') -> Just (PHPSessionValueObjectSerializeable (PHPSessionClassName cls') dat, rest'')
+                        _ -> Nothing
             of
               Nothing -> couldntDecode (PHPSessionCouldntDecodeSerializablePast rest)
               Just ok -> done ok
@@ -217,8 +218,9 @@ decodePartialPHPSessionValueCommon input done couldntDecode =
             Just (len, strrest) ->
               let len' = read (LBS.unpack len)
                   (str,rest') = LBS.splitAt len' $ strrest
-                  rest'' = LBS.drop 2 rest' 
-               in done (PHPSessionValueString str,rest'')
+               in case LBS.splitAt 2 rest' of
+                    ("\";", rest'') -> done (PHPSessionValueString str,rest'')
+                    _ -> couldntDecode (PHPSessionCouldntDecodeStringPast rest')
                
         _ ->
           let (l,rest') = decodePartialPHPSessionAttr rest []
@@ -266,8 +268,11 @@ decodePartialPHPSessionValueCommon input done couldntDecode =
             Nothing ->
               case dec_colon_and_open_curly input of
                 Just (":{", rest) ->
-                  let Just (sub,rest') = decodePartialPHPSessionValuesNested rest []
-                   in (Right $ reverse (PHPSessionAttrNested sub:l),rest')
+                  case decodePartialPHPSessionValuesNested rest [] of
+                    Just (sub,rest') ->
+                      (Right $ reverse (PHPSessionAttrNested sub:l),rest')
+                    Nothing ->
+                      (Left $ PHPSessionCouldntDecodePast input, input) 
                 Nothing ->
                   case dec_colon_uppercase_letters input of
                     Just ("NAN", rest)  -> decodePartialPHPSessionAttr rest ((PHPSessionAttrFloat $  0/0):l)
